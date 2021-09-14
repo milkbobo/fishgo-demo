@@ -1,0 +1,55 @@
+version: '3'
+services:
+  miners-monitor:
+    build:
+      context: .
+      dockerfile: ./dockerfile
+    ports:
+      - 9000:9000
+    container_name: filData
+    restart: unless-stopped
+    environment:
+      - FULLNODE_API_INFO=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJBbGxvdyI6WyJyZWFkIiwid3JpdGUiLCJzaWduIiwiYWRtaW4iXX0.cNKFaIl_ZOAoZf0wgFLvQ22BghXTEXPXydeer5WSths:ws://10.20.5.104:1234/rpc/v0
+      - FULLNODE_API_INFO2=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJBbGxvdyI6WyJyZWFkIiwid3JpdGUiLCJzaWduIiwiYWRtaW4iXX0.dIq2urUe6ukxLq629KdX7vj_Gu0Fxw4h9lCANUA1BME:ws://10.20.5.105:1234/rpc/v0
+    volumes:
+      - ./miners-monitor/conf/app.toml:/app/miners-monitor/conf/app.toml
+    networks:
+      - frontend
+
+  mongodb:
+    image: mongo:4.4.6
+    container_name: mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin666
+    ports:
+      - 27017:27017
+    volumes:
+      - /data/mongodb:/data/db
+      - /etc/localtime:/etc/localtime
+    networks:
+      - frontend
+
+  webserver:
+    image: nginx
+    container_name: webserver
+    restart: unless-stopped
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - ./dist:/usr/share/nginx/html:ro
+      - ./miners-monitor/data/nginx.conf:/etc/nginx/nginx.conf
+      - ./miners-monitor/data/5655864_fildata.impool.com.pem:/etc/nginx/5655864_fildata.impool.com.pem
+      - ./miners-monitor/data/5655864_fildata.impool.com.key:/etc/nginx/5655864_fildata.impool.com.key
+      - ./miners-monitor/data/5656719_api.fildata.impool.com.pem:/etc/nginx/5656719_api.fildata.impool.com.pem
+      - ./miners-monitor/data/5656719_api.fildata.impool.com.key:/etc/nginx/5656719_api.fildata.impool.com.key
+    networks:
+      - frontend
+
+
+networks:
+  frontend:
+    driver: bridge
+
