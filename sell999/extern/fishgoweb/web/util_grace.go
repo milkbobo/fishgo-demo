@@ -1,16 +1,16 @@
 package web
 
 import (
+	"context"
 	"fmt"
-	"github.com/facebookgo/grace/gracenet"
-	"github.com/facebookgo/httpdown"
-	. "github.com/milkbobo/fishgoweb/language"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
-	"sync"
 	"syscall"
+	"time"
+
+	. "github.com/milkbobo/fishgoweb/language"
 )
 
 var (
@@ -30,11 +30,8 @@ type GraceConfig struct {
 
 type graceImplement struct {
 	runGrace      bool
-	graceServer   httpdown.Server
-	graceNet      *gracenet.Net
 	stopSignal    map[os.Signal]bool
 	restartSignal map[os.Signal]bool
-	waitGroup     sync.WaitGroup
 }
 
 func NewGrace(config GraceConfig) (Grace, error) {
@@ -98,91 +95,45 @@ func stringToSignal(signalStr string) (os.Signal, error) {
 	}
 }
 
-func (this *graceImplement) signalHandler(errorEvent chan error) {
-	ch := make(chan os.Signal, 10)
-
-	allSignal := []os.Signal{}
-	for signal, _ := range this.stopSignal {
-		allSignal = append(allSignal, signal)
-	}
-	for signal, _ := range this.restartSignal {
-		allSignal = append(allSignal, signal)
-	}
-	signal.Notify(ch, allSignal...)
-
-	for {
-		sig := <-ch
-		if _, isStopSignal := this.stopSignal[sig]; isStopSignal {
-			globalBasic.Log.Debug("Receive Stop Signal")
-			//优雅关闭
-			go func() {
-				defer this.waitGroup.Done()
-				if err := this.graceServer.Stop(); err != nil {
-					errorEvent <- err
-				}
-			}()
-		} else {
-			globalBasic.Log.Debug("Receive Restart Signal")
-			//优雅重启
-			if _, err := this.graceNet.StartProcess(); err != nil {
-				errorEvent <- err
-			}
-		}
-	}
-}
-
-func (this *graceImplement) waitHandler(errorEvent chan error) {
-	defer this.waitGroup.Done()
-	if err := this.graceServer.Wait(); err != nil {
-		errorEvent <- err
-	}
-}
-
-func (this *graceImplement) waitServerStop(errorEvent chan error) {
-	this.waitGroup.Add(2)
-	go this.signalHandler(errorEvent)
-	go this.waitHandler(errorEvent)
-	this.waitGroup.Wait()
-}
-
 func (this *graceImplement) listenAndServeGrace(httpPort string, handler http.Handler) error {
-	//倾听端口
-	this.graceNet = &gracenet.Net{}
-	listener, err := this.graceNet.Listen("tcp", httpPort)
-	if err != nil {
-		return err
-	}
-
-	if didInherit {
-		if ppid == 1 {
-			globalBasic.Log.Debug("Listening on init activated %v", httpPort)
-		} else {
-			globalBasic.Log.Debug("Graceful handoff of %v with new pid %v and old pid %v", httpPort, os.Getpid(), ppid)
-		}
-	} else {
-		globalBasic.Log.Debug("Serving %s with pid %d", httpPort, os.Getpid())
-	}
-
-	//对外服务
-	httpServer := &httpdown.HTTP{}
-	this.graceServer = httpServer.Serve(&http.Server{
+	server := &http.Server{
 		Addr:    httpPort,
 		Handler: handler,
-	}, listener)
-
-	//关闭父级进程
-	if didInherit && ppid != 1 {
-		if err := syscall.Kill(ppid, syscall.SIGTERM); err != nil {
-			return fmt.Errorf("failed to close parent: %s", err)
-		}
 	}
 
 	//等待服务器结束
 	errorEvent := make(chan error)
 	waitEvent := make(chan bool)
+
 	go func() {
 		defer close(waitEvent)
-		this.waitServerStop(errorEvent)
+
+		// 当前的 Goroutine 等待信号量
+		quit := make(chan os.Signal)
+		// 监控信号
+		signalArray := []os.Signal{}
+		for v, _ := range this.stopSignal {
+			signalArray = append(signalArray, v)
+		}
+		signal.Notify(quit, signalArray...)
+		// 这里会阻塞当前 Goroutine 等待信号
+		<-quit
+		//调用Server.Shutdown graceful结束
+		globalBasic.Log.Debug("%+v", "开始优雅关闭")
+		timeoutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := server.Shutdown(timeoutCtx)
+		if err != nil {
+			fmt.Errorf("Server Shutdown: %+v", err)
+		}
+	}()
+
+	go func() {
+		err := server.ListenAndServe()
+		if err != nil {
+			fmt.Errorf("ListenAndServe: %+v", err)
+		}
 	}()
 
 	select {
